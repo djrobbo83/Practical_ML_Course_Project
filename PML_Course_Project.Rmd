@@ -1,0 +1,487 @@
+---
+title: 'Practical Machine Learning: Course Project'
+author: "David Robinson"
+date: "11th January 2019"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Background & Introduction
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement a a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here:[http://groupware.les.inf.puc-rio.br/har](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har) (see the section on the Weight Lifting Exercise (WLE) Dataset). 
+
+The goal of the project is to predict the manner in which the exercise was carried out. This is the classe variable in the training set, using any other variables to predict with. I will described how model has been built, including how cross validation has been used. Expected out of sample error and details of assumptions and decisions made. Finally the model will be use to predict 20 different test cases.
+
+For this task I will use Decision Trees, Random Forests and Gradient Boosting Machines (GBMs) to fit models to the data provided after some initial cleaning. These models are chosen as they lend themselves well to classification. I will carry out a Principal Components Analysis (PCA) to test the impact of reducing the features of the data on accuracy, while this may not work as well for tree based model methods chosen, I want to learn how to apply the techniques in the course. For completion I will also create an ensemble model using the two strongest model fitted using a stacking approach to see if we can get better results using a combination of models fitted - this is a common phenomina across data science competitions. 
+
+**Note: You can use the floating table of contents on the top left of the document to navigate to the relevant parts. This functions for Google Chrome.**
+
+## Libraries Required
+You will need the following packages installed: 
+
+* caret
+* rpart
+* randomForest
+* ggplot2
+* rattle
+* rpart.plot
+* corrplot
+* xgboost
+* DiagrammeR
+
+Please refer to [session information](#session_info) <a id = "session_info_r"></a>  in the appendix to see packages used at the time of report creation.
+
+```{r packages, include = FALSE}
+#INSTALL LOAD PACKAGES
+if("caret" %in% rownames(installed.packages()) == FALSE) {install.packages("caret")}
+if("rattle" %in% rownames(installed.packages()) == FALSE) {install.packages("rattle")}
+if("ggplot2" %in% rownames(installed.packages()) == FALSE) {install.packages("ggplot")}
+if("rpart" %in% rownames(installed.packages()) == FALSE) {install.packages("rpart")}
+if("rpart.plot" %in% rownames(installed.packages()) == FALSE) {install.packages("rpart.plot")}
+if("randomForest" %in% rownames(installed.packages()) == FALSE) {install.packages("randomForest")}
+if("corrplot" %in% rownames(installed.packages()) == FALSE) {install.packages("corrplot")}
+if("xgboost" %in% rownames(installed.packages()) == FALSE) {install.packages("xgboost")}
+if("DiagrammeR" %in% rownames(installed.packages()) == FALSE) {install.packages("DiagrammeR")}
+library(caret)
+library(rattle)
+library(ggplot2)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(corrplot)
+library(xgboost)
+library(DiagrammeR)
+```
+
+## Data Cleaning
+In order to keep the write up of the project concise, a full breakdown of data cleaning steps are included in the appendix [Appenix Data](#data). <a id = "data_r"></a> A summary of the steps are included below
+```{r data_clean_agg, include = FALSE, cache=TRUE}
+#setwd("F:\\Coursera\\C8_Practical_Machine_Learning")
+df_train <- read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"),header=TRUE)
+df_test <- read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"),header=TRUE)
+dim(df_train) #19622 Entries; 160 variables
+dim(df_test)  #20 Entries; 160 variables
+# CLEAN PART 1: USE nearZeroVar TO REDUCE NUMBER OF VARIABLES
+remove_nzv <- nearZeroVar(df_train)
+length(remove_nzv) #WILL REMOVE 60 VARIABLES
+df_train <- df_train[,-remove_nzv] #REMOVE COLUMNS WITH CLOSE TO ZERO VARIANCE
+df_test <- df_test[, -remove_nzv]   #REPLICATE DATA PROCESSING IN TEST
+# CLEAN PART 2: USE PROPORTION OF N/As or NULL TO FURTHER REDUCE NUMBER OF VARIABLES
+NA_95pc <- sapply(df_train, function(x) mean(is.na(x))) > 0.95
+summary(NA_95pc) #WILL REMOVE A FURTHER 41 VARIABLES
+df_train <- df_train[,NA_95pc == FALSE] #REMOVE COLUMNS WITH 95% NA FROM TRAIN
+df_test <- df_test[,NA_95pc == FALSE] #REPLICATE DATA PROCESSING IN TEST
+# CLEAN PART 3: REMOVE IDENTIFICATION / TIMESTAMP COLUMNS
+df_train <- df_train[, -c(1:6)]; df_train$classe <- as.factor(df_train$classe)
+df_test <- df_test[,-c(1:6)]
+str(df_train)
+dim(df_test)
+
+```
+
+* Imported data: Train set has 19622 rows and 160 columns; Test set has 20 rows and 160 columns
+* Initial summaries on data using `str()` discovered a large number of variables had a high proportion of N/A's
+* Removed variables where the variance within a variable is near to zero using `nearZeroVar()` function - this step removed `r length(remove_nzv)` variables
+* Removed variables where roportion of N/As or blanks were over 95% using additional code - this step removed a further 41 Variables
+* Inspecting the data set I can see that there are a number of variables which are not related to `classe` and are identification or timestamp variables:
+
+  + `X`
+  + `user_name`
+  + `raw_timestamp_part_1`
+  + `raw_timestamp_part_2`
+  + `cvtd_timestamp`
+  + `num_window`
+  
+* Finally I set the variable `classe` as a factor using the function `as.factor()` for ease of future computations
+
+The analysis may have benefited from both feature engineering and imputing missing values. However due to both time constraints and lack of subject knowledge I decided that the best course of action was to use the features as is. So we conclude the data cleaning phase with a dataset containing 53 variables.
+
+## Approach to Validation & Cross-Fold Validation
+
+In order to create data sets to assess accuracy of models created, we will need to create a validation data set. This is an important step and since no model will be trained on this data its a good assessment of the likely model accuracy on data held out of the model build. This will be used to assess the likely impact on the test set accuracy. I have chosen to split the train data provided and cleaned in previous step into 70% train data and 30% validation data. The validation data will be excluded from all model fitting. For this I will use the function `createDataPartition()` in the `caret` package
+
+``` {r data_split, cache = TRUE}
+inTrain <- createDataPartition(df_train$classe, p = 0.7, list = F)
+df_train_final <- df_train[inTrain,]; dim(df_train_final)
+df_valid_final <- df_train[-inTrain,]; dim(df_valid_final)
+
+```
+
+Finally on the concept of validation, Machine learning techniques often rely on Cross Fold Validation when fitting the model on the training data. As tree based methods are low bias and high variance while training our model we will break our data into *k* folds, for each fold the model is built on the remaing *k-1* folds, then the model is tested on k^th^ fold and the average of the k recorded erros is the cross validation error. The model selected is the one with the lowest average cross validation error. This is made very simple using the `caret` package. So we'll set this up now and we'll use the same cross validation approach for all models we are fitting. 
+
+``` {r cv_setup, cache = TRUE}
+cv_method <- trainControl(method = "cv", number = 5)
+```
+
+we could experiment with different cross validation approaches which may lead us to a better model, but due to time restraints I won't look to test out different approaches in this report.
+
+## Aside: Principal Compnent Analysis (PCA)
+
+Principal Component Analysis is a statistical procedure that converts a set of potentially correlated observations into a set of linearly uncorrelated variables called principal components. 
+
+First we check to see if there are correlations in our data by using `cor()` function to calculate and then `corrplot()` to plot these - to see if there is potential to use PCA on this data set
+
+```{r correlate, cache = TRUE}
+correlations <- cor(df_train_final[,-53]) #REMOVE NON NUMERIC VARIABLES classe
+corrplot(correlations, order = "FPC", method = "color", type = "lower", tl.cex = 0.8, tl.col = "grey50")
+```
+
+We can see from this plot that there are some variables which are heavily correlated with others. this suggests that there may be some benefit in carrying out principal component analysis to reduce the number of variables. The `caret` package again makes this very easy for us using the function `preProcess` but we could also use `prcomp()` in the stats package. Here the variables are centered and scaled. the preProcess command keeps all the components that explain 95% of the variance.
+
+``` {r pca, cache = TRUE}
+pca <- preProcess(df_train_final[,-53], method = "pca")
+#CARET KEEPS THE COMPONENTS THAT EXPLAIN 95% OF THE VARIANCE
+df_train_final_pca <- predict(pca, df_train_final[,-53])
+df_train_final_pca$classe <- df_train_final$classe
+df_valid_final_pca <- predict(pca, df_valid_final[,-53])
+df_valid_final_pca$classe <- df_valid_final$classe
+df_test_pca <- predict(pca, df_test[,-53])
+
+# OUTPUT PCA 1 & 2
+pca$rotation[,1:2]
+plot(df_train_final_pca[,1],df_train_final_pca[,2], col = df_train_final$classe)
+
+# CALCULATE CUMULATIVE %
+mod_prcomp <- prcomp(df_train_final[,-53], center = T, scale. = T)
+#mod_prcomp$rotation[,1:2]
+summary(mod_prcomp)
+# ADD CUMULATIVE PLOT - IN OTHER R SESSION
+vars <- apply(mod_prcomp$x, 2, var)
+props <- cumsum(vars/sum(vars))
+pca_plot <- as.data.frame(props)
+pca_plot$PCA_Num <- seq.int(nrow(pca_plot))
+names(pca_plot)[names(pca_plot) == "props"] <- "Cumulative_Variance"
+
+# CREATE PLOT
+g <- ggplot(data = pca_plot, aes(x=PCA_Num, y=Cumulative_Variance)) 
+g + geom_line() +
+  geom_point() +
+  ggtitle("Principal Component Analysis", 
+          subtitle = "Cumulative Variance Explained up to and including Principal Component") +
+  ylab("Variance Explained") +
+  xlab("Principal Component #") +
+  geom_hline(yintercept = 0.95, colour = "red", size = 1, linetype = "dashed") +
+  geom_text(aes(label = "95% Variance Threshold"), 
+            size = 4, x = 10, y = 0.967, colour = "red" ) 
+
+```
+
+From this we can see that:
+
+* 25 principal components explain 95% of the variance in the model - see graph above
+* we have output the first two principal components above to show how these are linear constructs of other factors
+* a plot of the cumulative variance explained by PCA has been created which shows that the first principal component explains the largest proportion of variance and each subsequent component explains less than its predecessor
+* Highlights that the first 25 Components explains 95% of variance.
+* We can see that although we have less variables to model, we lose transparency, for example we can see from the output above showing the construction of the first two factors that each Principal component is a linear construct of the variables in the model.
+
+## Summary Pre Modelling
+
+After our data cleaning, splitting and pre processing has been completed we have 6 datasets we will use in the remainder of the analysis:
+
+* `df_train_final` : 70% of original train data, with irrelevant, largely missing and variables with close to zero variance removed. Contains 53 variables and 13,737 rows. **Will be used to train models**
+* `df_valid_final` : 30% of original train data, with irrelevant, largely missing and variables with close to zero variance removed. Contains 53 variables and 5,885 rows. **Will be used to assess expected accuracy of trained models before we apply to test dataset**
+* `df_train_final_pca` : 70% of original train data, with irrelevant, largely missing and variables with close to zero variance removed and principal components analysis applied to remaining variables and `classe` variable appended. Contains 26 variables and 13,737 rows. **Will be used to train models**
+* `df_valid_final_pca` : 30% of original train data, with irrelevant, largely missing and variables with close to zero variance removed and principal components analysis applied to remaining variables and `classe` variable appended. Contains 26 variables and 5,885 rows. **Will be used to assess expected accuracy of trained models before we apply to test dataset, and also to compare if PCA adds value to this exercise**
+* `df_test` : Original Test data with same transformations as applied to df_train_final. 53 variables and 20 observations. **Will be used to score final models and submit quiz**
+* `df_test_pca` : Original Test data with same transformations as applied to df_train_final_pca. 26 variables and 20 observations. **Will be used to score final models and submit quiz if PCA proves more succesful than using raw data features** 
+
+We will fit 3 types of models to these datasets and an ensemble model of the best two. The following methods will be used:
+
+* **Decision Tree**: The most basic approach used in this project, produces one tree using the `rpart` and `caret` package - these models are very simple to understand and visualise but with low complexity we expect these models to be lowest accuracy
+* **Random Forests**: A more complex approach that relies on a multitude of weighted decision trees, produced using the `rf` method in `caret` - since there is a multitude of trees, the model is more difficult to interpret, but we expect it to have a higher accuracy on our validation data than a simple decision tree.
+* **Gradient Boosting Machines**: A further variation on the decision tree concept where the first predictor explains the largest proportion of variance in the data, then subsequent predictors are fitted on the residuals, this continues iteratively until a stopping criteria is hit, typically the predictors used are decision trees. This is even less interpretable than Random Forests but we expect a higher accuracy.
+* **Ensemble** : I will take the best two models created and weight them using a process called stacking, such that the model will be a blend of these models. Typically in Machine learning competitions on Kaggle, winning submissions use ensemble methods and as its touched on in the course I want to test this approach out on a real life example.
+
+## Building The Models
+
+Before we start modelling its important to create a seed so that results are reproducible. While I could just initialise this once for the project, I prefer to reset the seed before every new model is fitted so you will frequently see the short line of code `set.seed(2808)` the choice of 2808 as the seed is arbitrary. 
+
+Throughout this section I use Accuracy as the metric to assess predictive power of my models. 
+
+### 1. Decision Tree
+
+For the decision tree models we will use the function `train()` in `caret` which uses the `rpart` package, this function calls our chosen cross validation method discussed above to reduce potential overfit
+``` {r model_tree_fit, cache = TRUE}
+# Using variables as provided
+set.seed(2808)
+model_tree <- train(classe ~ ., data = df_train_final, method = "rpart", tuneLength = 50, metric = "Accuracy", trControl = cv_method)
+# Using PCA
+set.seed(2808)
+model_tree_pca <- train(classe ~ ., data = df_train_final_pca, method = "rpart", tuneLength = 50, metric = "Accuracy", trControl = cv_method)
+```
+
+Now we use the `predict()` function to score these models onto our validation data. Then we can fit a matrix using the Actual `classe` outcome in this validation dataset against the predicted `classe` using the `confusionMatrix()` function and use this to assess the accuracy of our models.
+
+``` {r model_tree_out, cache = TRUE}
+# Non PCA Tree
+predict_tree <- predict(model_tree, newdata = df_valid_final)
+CM_tree <- confusionMatrix(predict_tree, df_valid_final$classe)
+CM_tree
+
+# PCA Tree
+predict_tree_pca <- predict(model_tree_pca, newdata = df_valid_final_pca)
+CM_tree_pca <- confusionMatrix(predict_tree_pca, df_valid_final_pca$classe)
+CM_tree_pca
+```
+
+We can see from the output above that the tree fitted on the variables as provided has an accuracy of `r paste0(round(CM_tree$overall[1],4)*100, "%")` while the model fitted on the data reduced used PCA has an accuracy of `r paste0(round(CM_tree_pca$overall[1],4)*100, "%")`
+
+This shows us there is an expected drop off in prediction power if we use PCA on the data to reduce the number of features. Also an Accuracy of `r paste0(round(CM_tree$overall[1],4)*100, "%")` is not a bad start point given a simplistic model.
+
+### 2. Random Forest
+
+Extending a tree to a forest, we expect a jump in predictive power. 
+
+``` {r model_rf_fit, cache = TRUE}
+# NON PCA
+set.seed(2808)
+model_rf <- train(classe ~., data = df_train_final, method = "rf", trControl = cv_method)
+
+# PCA
+set.seed(2808)
+model_rf_pca <- train(classe ~., data = df_train_final_pca, method = "rf", trControl = cv_method)
+```
+
+Again predicting these on to the validation dataset and assessing accuracy.
+
+``` {r model_rf_out, cache = TRUE}
+#PREDICT MODELS ONTO VALIDATION DATA
+predict_rf <- predict(model_rf, newdata = df_valid_final)
+predict_rf_pca <- predict(model_rf_pca, newdata = df_valid_final_pca)
+
+#NON PCA confusion Matrix
+CM_rf <- confusionMatrix(predict_rf, df_valid_final$classe)
+CM_rf
+#PCA confusion Matrix
+CM_rf_pca <- confusionMatrix(predict_rf_pca, df_valid_final_pca$classe)
+CM_rf_pca
+
+```
+
+The Accuracy here is much better, as we'd expect, the model fitted on the variables as provided has an accuracy of `r paste0(round(CM_rf$overall[1],4)*100, "%")` while the model fitted on the data reduced used PCA has an accuracy of `r paste0(round(CM_rf_pca$overall[1],4)*100, "%")`.
+
+We can see that the predictive power of PCA based model has closed the gap considerably on the model based on variables as provided, however it still lags.
+
+### 3. GRADIENT BOOSTING MACHINES (GBM)
+
+With the accuracy of the Random Forest model so high, we could have simply used it to predict the classes of our 20 test cases, however for completion and to enable me to better understand the concepts of the course, I'll continue as planned. Again, we fit the models. 
+
+``` {r gbm_fit, cache = TRUE}
+# NON PCA MODEL
+set.seed(2808)
+model_gbm <- train(classe ~., data = df_train_final, method = "xgbTree", trControl = cv_method)
+# PCA MODEL
+set.seed(2808)
+model_gbm_pca <- train(classe ~., data = df_train_final_pca, method = "xgbTree", trControl = cv_method)
+```
+
+Using these models to predict the outcome of the validation data and assessing accuracy of predictions vs actual values.
+
+``` {r gbm_out, cache = TRUE}
+#PREDICT VALIDATION DATA OUTCOMES
+predict_gbm <- predict(model_gbm, newdata = df_valid_final)
+predict_gbm_pca <- predict(model_gbm_pca, newdata = df_valid_final_pca)
+
+#ACCURACY METRICS - NON PCA
+CM_gbm <- confusionMatrix(predict_gbm, df_valid_final$classe)
+CM_gbm
+
+#ACCURACY METRICS - PCA
+CM_gbm_pca <- confusionMatrix(predict_gbm_pca, df_valid_final_pca$classe)
+CM_gbm_pca
+
+```
+
+The Accuracy here is slightly better than the Random forest models, the model fitted on the variables as provided has an accuracy of `r paste0(round(CM_gbm$overall[1],4)*100, "%")` while the model fitted on the data reduced used PCA has an accuracy of `r paste0(round(CM_gbm_pca$overall[1],4)*100, "%")`.
+
+### 4. ENSEMBLING
+
+While either of the Random Forest model or GBM models using the actual variables in the models rather than the reduced variable set under PCA would be sufficient for the testing datasets given accuracies of over 90%, we will attempt to model stack, we don't really expect much of an improvement in accuracy of models, again I'm just using this as an opportunity to apply some of the theory from the course.
+
+The steps of fitting a stacked model are as follows:
+
+* Create a data frame which includes the variable we are trying to predict, and the predictions of the models we want to ensemble on the training data
+* Fit a new machine learning model using the formula *target variable ~ model_1 + .... model_n*
+* Predict this models onto validation data and use confusion matrix to assess likely accuracy
+* Decide on whether to use ensemble as final model or one of the models on their own for the test data
+
+``` {r stacking_setup, cache = TRUE}
+#GET PREDITIONS FROM GBM MODEL FOR TRAINING DATASET
+predict_gbm_stack <- predict(model_gbm, newdata = df_train_final)
+#GET PREDITIONS FROM RANDOM FOREST MDOEL FOR TRAINING DATASET
+predict_rf_stack <- predict(model_rf, newdata = df_train_final)
+
+#CREATE A DATAFRAME TO COLLECT MODEL PREDICTIONS AND CLASSE FACTOR TOGETHER
+df_stacked <- data.frame(predict_gbm = predict_gbm_stack, predict_rf = predict_rf_stack, classe = df_train_final$classe)
+
+#NOW FIT MODEL
+set.seed(2808)
+model_stacked <- train(classe ~ predict_gbm + predict_rf, data = df_stacked, trControl = cv_method, method = "xgbTree")
+
+```
+
+Now Predict onto validation data and assess accuracy
+
+``` {r stack_out, cache = TRUE}
+#PREDICT ONTO VALIDATION DATA
+predict_stacked <- predict(model_stacked, newdata = df_valid_final)
+#TEST ACCURACY OF STACKED MODEL
+CM_stacked <- confusionMatrix(predict_stacked, df_valid_final$classe)
+CM_stacked
+
+```
+
+We can see that the stacked model has an accuracy of **`r paste0(round(CM_stacked$overall[1],4)*100, "%")`** the same as the GBM model accuracy of `r paste0(round(CM_gbm$overall[1],4)*100, "%")` and the Random Forest model accuracy of `r paste0(round(CM_rf$overall[1],4)*100, "%")`.
+
+We see in Kaggle competitions the winning entry is typically a stacked model so that we expect stacked models to outperform models from single methods. **Why is this not the case here? **
+
+* The accuracy of both models pre ensemble is > 99%; therefore any additional model will struggle to beat the models
+* We are using a validation set which is 30% of the original training data to assess accuracy and this may be subject to noise and lead us to conclude GBM model is superior, on a larger set of data we'd have more confidence in our result. 
+* Finally the GBM model may actually be superior to both the stacked and Random forest model.
+
+To investigate this last point really quickly we can look at the validation data actual `classe` predictions versus the predictions of the GBM and random forest model - is it clear that one of these models is superior to the other where the prediction differs?
+
+First create a dataset containing the predictions of the two models on the validation data and the actual classe variable. Now create a subset of this dataset where the prediction for the GBM model is different to Random forest model. 
+
+``` {r mismatch, cache = TRUE}
+# LETS SEE WHERE PREDICTIONS DIFFER BETWEEN GBM AND RF MODEL...
+df_valid_stack <- data.frame(predict_gbm = predict_gbm, predict_rf = predict_rf, classe = df_valid_final$classe)
+df_stack_mismatch <- df_valid_stack[df_valid_stack$predict_gbm != predict_rf,]
+
+```
+
+There are only `r dim(df_stack_mismatch)[1]` instances out of `r dim(df_valid_final)[1]` rows in the validation dataset where this mismatch occurs so less than 1%. Lets look at the first few rows of this data. Then finally calculate the percentage of mismatches which are correctly predicted by the GBM model.
+
+``` {r mismatch_test, cache = TRUE}
+
+head(df_stack_mismatch)
+sum(df_stack_mismatch$predict_gbm == df_stack_mismatch$classe) / dim(df_stack_mismatch)[1]
+```
+
+this shows us that `r paste0(sum(df_stack_mismatch$predict_gbm == df_stack_mismatch$classe) / dim(df_stack_mismatch)[1], "%")` of the mismatches are better predicted by the GBM model, hence the GBM model is superior to the Random Forest model as we seen earlier, but also that means its difficult for the stacked model to improve on the expected gbm accuracy.
+
+## Summary: Chosing The Final Model
+
+As we have fitted a lot of models above, pull all the results into one data frame and plotting to summarise the results above.
+
+``` {r summ_plot, cache = TRUE}
+Accuracy <- c(CM_tree$overall[1], CM_tree_pca$overall[1], CM_rf$overall[1], CM_rf_pca$overall[1], CM_gbm$overall[1], CM_gbm_pca$overall[1], CM_stacked$overall[1] )
+PCA_Model <- c("N", "Y", "N", "Y","N", "Y", "N")
+X <- c(1,1,2,2,3,3,4)
+Model_Name <- c("Decision Tree", "Decision Tree", "Random Forest", "Random Forest", "GBM", "GBM", "Ensemble") 
+
+df_results <- data.frame(Model_Name, PCA_Model, Accuracy, X)
+library(ggrepel)
+ggplot(data = df_results, aes(x=X, y = Accuracy, color = PCA_Model)) +
+  geom_point() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  ggtitle("Model Accuracy", 
+          subtitle = "Expected Accuracy based on Validation Data") +
+  ylab("Accuracy") +
+  geom_label_repel(aes(label= paste0(Model_Name,";", round(Accuracy,4))), 
+                       arrow = arrow(length = unit(0.03, "npc"), type = "closed", ends = "first"),
+                       force = 10,
+                       box.padding = 0.35, point.padding = 0.5, label.size = 0.1, show.legend = F) +
+  ylim(0.6,1.05)
+```
+
+This shows:
+
+* In all model types the model fitted on the data where the number of variables was reduced using Principal component analysis is worse than the corresponding model without PCA (i.e. using raw features) - **so reject the PCA candidate models**
+* GBM model outperforms the Random Forest Model, however both have accuracy over 99%, so we'd expect both to do well when scoring our test data - **Reject Random Forest Model**
+* The expected Accuracy / Error rate is the same for GBM and Ensemble model, however the GBM model is simpler - **Reject Ensemble Model**
+
+**We will therefore Select the Model fitted using a GBM approach to predict the outcome of the test data, we expect the accuracy of the prediction to be `r paste0(round(CM_gbm$overall[1],4)*100, "%")`.**
+
+so now we've selected our model, lets find out a little more detail about it. Using the function `VarImp()` in the Caret package we can see which features in the model have most influence in the model. Importance is calculated for a single decision tree by the amount each attribute split point improves the performance measre, weighted by number of observations node is responsible for. The Feature imoprtances are then averaged across all of the weak predictors in the model. Lets plot:
+
+``` {r feature_Imp, cache = TRUE}
+importance <- varImp(model_gbm, scale = F)
+  plot(importance, main = "GBM Model: Feature Importance")
+```
+
+This shows us the following:
+* the most important features in the mode are the variables `yaw_belt` and `roll_belt`
+* There are a large number of factors used in the model - highlighting the issue with transparency of Machine Learning models
+
+Lets look at the first 2 trees fitted in the GBM model using the function `xgb.plot.tree()` in the `xgboost` package 
+
+``` {r gbm_tree, cache = TRUE}
+ xgb.plot.tree(model = model_gbm$finalModel, trees =1:2 )
+```
+This shows the first 2 trees fitted in the gbm model, which gives us some insight into the complexity of the model, however it only touches on it as there are 749 trees in total fitted to the data. 
+
+## Predicting Onto Test Data
+
+The final part of the project involves predicting the outcome of the 20 test cases in the test dataset. As discussed in the summary section we will use the GBM model fitted on the variable as provided (ie. not using PCA).
+
+``` {r quiz, cache = TRUE}
+predict_test <- data.frame(problem_id = df_test$problem_id, predicted_classe = predict(model_gbm, newdata = df_test))
+predict_test
+```
+
+
+## Appendix
+
+### Data Cleaning
+<a id = "data"></a>
+
+First we'll import the data and run some simple summaries using `dim()` and `str()` functions
+```{r data_clean_1, include = TRUE, cache = TRUE}
+
+df_train <- read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"),header=TRUE)
+df_test <- read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"),header=TRUE)
+dim(df_train) #19622 Entries; 160 variables
+dim(df_test)  #20 Entries; 160 variables
+
+str(df_train)
+
+```
+
+Here we can see a large number of columns has N/A Values, so in order to quickly clean the data and remove the number of variables we are working with, we will remove the variables which have N/A proportions over 90%. Note that if we were carrying out a full analysis with less time constraints we might investigate to see if any of these variables, despite limited data, may improve model. But first we will use the very hand `nearZeroVar()` function to remove variables with little or no variation in their response by row, which will not be useful in predicting outcome
+
+```{r data_clean_2, include = TRUE, cache = TRUE}
+# CLEAN PART 1: USE nearZeroVar TO REDUCE NUMBER OF VARIABLES
+remove_nzv <- nearZeroVar(df_train)
+length(remove_nzv) #WILL REMOVE 60 VARIABLES
+df_train <- df_train[,-remove_nzv] #REMOVE COLUMNS WITH CLOSE TO ZERO VARIANCE
+df_test <- df_test[, -remove_nzv]   #REPLICATE DATA PROCESSING IN TEST
+
+# CLEAN PART 2: USE PROPORTION OF N/As or NULL TO FURTHER REDUCE NUMBER OF VARIABLES
+NA_95pc <- sapply(df_train, function(x) mean(is.na(x))) > 0.95
+summary(NA_95pc) #WILL REMOVE A FURTHER 41 VARIABLES
+df_train <- df_train[,NA_95pc == FALSE] #REMOVE COLUMNS WITH 95% NA FROM TRAIN
+df_test <- df_test[,NA_95pc == FALSE] #REPLICATE DATA PROCESSING IN TEST
+dim(df_train)
+dim(df_test)
+
+# CLEAN PART 3: REMOVE IDENTIFICATION / TIMESTAMP COLUMNS
+df_train <- df_train[, -c(1:6)]; df_train$classe <- as.factor(df_train$classe)
+df_test <- df_test[,-c(1:6)]
+str(df_train)
+dim(df_test)
+
+```
+
+Using these data cleansing approaches we are left with a much more manageable dataset with `r dim(df_train)[1]` rows and `r dim(df_train)[2]` variables. The cleaning actions have been replicated in the test dataset
+
+ 
+
+[Back To Report](#data_r)
+
+### Session Info
+<a id = "session_info"></a>
+
+``` {r session_info}
+sessionInfo()
+```
+
+[Back To Report](#session_info_r)
